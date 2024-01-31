@@ -1,0 +1,333 @@
+---
+title: "R Notebook"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Effect of Mass Transport Systems and Economic output.
+
+```{r}
+library(stargazer)
+library(tidyverse)
+library(skimr)
+library(ggplot2)
+library(imputeTS)
+library(did)
+library(stargazer)
+library(recipes)
+library(did2s)
+library(fixest)
+```
+
+```{r}
+# load Santiago city data file 
+stgo <- read_csv("/Users/hendrixperalta/Downloads/Projects/Will-A-Subway-Line-Reduce-Transit-related-Deaths/stgo.csv") 
+```
+
+```{r}
+# load Santo Domingo city data file 
+sd <- read_csv("/Users/hendrixperalta/Downloads/Projects/Will-A-Subway-Line-Reduce-Transit-related-Deaths/sd.csv") 
+
+```
+
+```{r}
+# 2013 - 2020 period is choosen due to data availability 
+
+sd_13_20 <- sd %>% filter(year >= 2013 & year <= 2020) 
+```
+
+```{r}
+skim(sd_13_20) %>% as.tibble
+```
+
+```{r}
+# Transform the variable year to numeric 
+# Create a post variable indicating the treatment period 
+# Create a post_factor variable that labels the periods of pre and post treatment
+# Only the variables year, homicide, medical_checks, pop, ntl, pm25, transit_death, post and post_factor are selected
+
+sd_fix <- sd_13_20 %>% 
+  mutate(
+    year = as.integer(year),
+    post = ifelse(year >= 2018, 1, 0), 
+    post_factor = factor(post , labels = c("Pre-Treatment", "Post-Treatment"))
+  ) %>% 
+  select(year, homicide, medical_checks, pop, ntl, pm25, transit_death, post, post_factor)
+```
+
+```{r}
+# No missing values in the data set
+
+skim(sd_fix) %>% as.tibble
+```
+### Linear Regression 
+
+```{r}
+# Create a box plot for each group of 'post'
+
+ggplot(sd_fix, aes(x = post_factor, y = ntl)) +
+  geom_boxplot() +
+  labs(x = "Treatment", y = "Transit-related Deaths",
+       title = "Distribution of Transit-related Deaths by Post-Treatment")
+```
+
+We can observe that nightime lights present different distributions before and after the treatment. On that regard, the mean and median of nighttime Lights is higher in the post treatment group hinting a correlation between the introduction of mastransportation systems to the Santo Domingo city and economic output. 
+
+```{r}
+# Definition of the regression models
+
+model_1 <- lm(ntl ~ post, data = sd_fix)
+model_2 <- lm(ntl ~ post + medical_checks , data = sd_fix)
+model_3 <- lm(ntl ~ post + medical_checks + transit_death, data = sd_fix)
+model_4 <- lm(ntl ~ post + medical_checks + transit_death + homicide , data = sd_fix)
+#model_5 <- lm(transit_death ~ post + medical_full + ntl_root + homicide_root + pm25, data = sd_fix)
+#model_6 <- lm(transit_death ~ post + medical_full + ntl_root + homicide_root + pm25 + pop, data = sd_fix)
+
+
+#ntl_root, homicide_root, medical_full, pop, pm25, post, transit_death
+```
+
+```{r}
+residual_1 <- resid(model_1)
+residual_2 <- resid(model_2)
+residual_3 <- resid(model_3)
+residual_4 <- resid(model_4)
+#residual_5 <- resid(model_5)
+#residual_6 <- resid(model_6)
+```
+
+```{r}
+# Creates a plot to check for patterns in the regression residuals
+
+ggplot(data = data.frame(residual_4)) +
+  geom_point(aes(x = seq_along(residual_4), y = residual_4), pch = 16, col = "blue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Observation", y = "Residuals", title = "Residual Plot for NTL Model")
+```
+there are no visible patterns on the residuals of the regression indicating that there is no heteroschedasticity on our dataset. 
+
+
+```{r}
+# Regression table - includes the 4 regression models
+
+variable_names <- c(
+  "post" = "Post Subway",
+  "medical_checks" = "Access to Healthcare",
+  "transit_death" = "Transport Related Deaths",
+  "homicide" = "Social Insecurity"
+)
+
+stargazer(model_1, model_2, model_3, model_4,
+          type = "text", covariate.labels = variable_names,
+          notes = c("GDP = Masked Mean Nighttime Lights", 
+                    "Pollution = Count of Particule Matter PM 2.5", 
+                    "Access to Healthcare = Count of Medical Checks in Public Facilities", 
+                    "Social Insecurity = Count of homicides cases"))
+```
+
+In the table we can observe that the post dummy variable indicating the introduction of the mass transportation system have big and statistical significance in all 4 models. 
+
+
+### Difference in Differences 
+
+```{r}
+# 2013 - 2020 period is choosen due to data availability 
+
+stgo_13_20 <- stgo %>% filter(year >= 2013 & year <= 2020)
+```
+
+```{r}
+stgo_fix <- stgo_13_20 %>% 
+  
+# Transform the variable year to numeric 
+# Create a "post" variable indicating the treatment period 
+# Create a "post_factor" variable that labels the periods of pre and post treatment
+# Only the variables year, homicide, medical_checks, pop, ntl, pm25, transit_death, post and post_factor are selected
+  
+  mutate(
+    year = as.integer(year),
+    post = ifelse(year >= 2018, 1, 0), 
+    post_factor = factor(post , labels = c("Pre-Treatment", "Post-Treatment"))
+  ) %>% 
+  select(year, homicide, medical_checks, pop, ntl, pm25, transit_death, post, post_factor)
+```
+
+```{r}
+
+# Create variable "treat" to indicate if it is the treatment or control group (used with did library)
+# Craate variable "id" to indicate if it is the treatment or control group (used with fixest and did2s libraries)
+# Scale variables bt population to make them comparable
+
+sd_did <- sd_fix %>% mutate(
+    treat = TRUE,
+    id = "santo Domingo",
+    year = as.integer(year),
+    death_pop = transit_death/(pop/1000),
+    homicide_pop = homicide/(pop/1000),
+    medical_pop = medical_checks/(pop/1000)
+)
+
+stgo_did <- stgo_fix %>% mutate(
+    treat = FALSE,
+    id = "santiago",
+    year = as.integer(year),
+    death_pop = transit_death/(pop/1000),
+    homicide_pop = homicide/(pop/1000),
+    medical_pop = medical_checks/(pop/1000)
+)
+```
+
+```{r}
+
+
+ggplot()+ 
+geom_line(data = sd_did, aes(x = year, y = ntl, color = "Santo Domingo", ))+ 
+geom_line(data = stgo_did, aes(x = year, y = ntl, color = "Santiago")) +
+geom_vline(xintercept = 2018, linetype = "dashed", color =  "black") + 
+xlab("Year") +
+  ylab("Nighttime Lights") +
+  ggtitle("NTL Increased After Introducing the cable car and Subway Line expansion") +
+  theme_minimal()
+```
+
+```{r}
+combined_data <- bind_rows(sd_did, stgo_did)
+```
+
+```{r}
+combined_data
+```
+
+```{r}
+skim(combined_data)
+```
+
+```{r}
+model_did = lm(ntl ~ treat + post + treat * post, data = combined_data)
+model_did_2 = lm(ntl ~ treat + post + medical_pop + death_pop + homicide_pop + treat * post, data = combined_data)
+```
+
+```{r}
+
+stargazer(model_did, model_did_2, type = "text")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or
+by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output
+will be saved alongside it (click the *Preview* button or press
+*Cmd+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the
+editor. Consequently, unlike *Knit*, *Preview* does not run any R code
+chunks. Instead, the output of the chunk when it was last run in the
+editor is displayed.
+
+```{r}
+sd_did2 <- sd_fix %>% mutate(
+    treat = TRUE,
+    id = 1,
+    first_treat = 2018,
+    rel_time = year - 2018,
+    year = as.integer(year),
+    death_pop = transit_death/(pop/1000),
+    homicide_pop = homicide/(pop/1000),
+    medical_pop = medical_checks/(pop/1000)
+)
+
+stgo_did2 <- stgo_fix %>% mutate(
+    treat = FALSE,
+    first_treat = 0,
+    rel_time = year - 2018,
+    id = 0,
+    year = as.integer(year),
+    death_pop = transit_death/(pop/1000),
+    homicide_pop = homicide/(pop/1000),
+    medical_pop = medical_checks/(pop/1000)
+)
+```
+
+```{r}
+data_did2 <- bind_rows(sd_did2, stgo_did2) 
+```
+
+```{r}
+data_did2 
+```
+
+```{r}
+# did2s - Gardner 2021 - paper Two-stage differences in differences
+es_mod = did2s(
+  data         = data_did2,
+  yname        = "ntl", 
+  first_stage  =  ~ medical_pop + death_pop + homicide_pop | id + year, # 0 b/c we have no controls in this dataset
+  second_stage = ~ i(rel_time, ref = -c(1, Inf)),      # binary treatment dummy (not an event-study) 
+  treatment    = "post",
+  cluster_var  = "id",
+  )
+```
+
+```{r}
+es_mod
+```
+
+```{r}
+es_mod |>
+  fixest::iplot(
+    main     = "did2s",
+    xlab     = "Time to treatment",
+    drop     = "[[:digit:]]{2}",    # Drop any leads/lags greater than |9|
+    ref.line = 1
+  )
+```
+
+```{r}
+skim(data_did2)
+
+```
+
+```{r}
+# did - Callaway and Sant’Anna 2021 -  paper Difference-in-Differences with multiple time periods
+cs21 = att_gt(
+    yname         = "ntl",
+    tname         = "year",
+    idname        = "id",
+    gname         = "first_treat",
+  # xformla       = NULL,            # No additional controls in this dataset 
+    control_group = "nevertreated", # Too few groups for "nevertreated" default
+    data          = data_did2
+    )
+```
+
+```{r}
+atts <- att_gt(yname = "ntl", # LHS variable
+               tname = "year", # time variable
+               idname = "id", # id variable
+               gname = "first_treat", # first treatment period variable
+               data = data_did2, # data
+               xformla = NULL, # no covariates
+               #xformla = ~ l_police, # with covariates
+               est_method = "dr", # "dr" is doubly robust. "ipw" is inverse probability weighting. "reg" is regression
+               control_group = "nevertreated", # set the comparison group which is either "nevertreated" or "notyettreated" 
+               bstrap = TRUE, # if TRUE compute bootstrapped SE
+               biters = 1000, # number of bootstrap iterations
+               print_details = FALSE, # if TRUE, print detailed results
+               clustervars = "id", # cluster level
+               panel = TRUE) # whether the data is panel or repeated cross-sectional
+```
+
+```{r}
+# fixest - Sun and Abraham 2020 - paper Estimating Dynamic Treatment Effects in Event Studies with Heterogeneous Treatment Effects
+sa20 = feols(
+    ntl ~ sunab(first_treat, rel_time) | id + year, 
+    data = data_did2, vcov = ~id
+    )
+sa20
+```
+
+\`\`\`{r} sa20 \|\> iplot( main = "fixest::sunab", xlab = "Time to
+treatment", drop = "[[:digit:]]{2}", \# Limit lead and lag periods to
+-9:9 ref.line = 1 )
